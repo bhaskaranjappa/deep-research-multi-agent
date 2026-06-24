@@ -1,6 +1,5 @@
 import os
 import json
-import time
 from typing import Annotated, Sequence, TypedDict
 from google import genai
 from google.genai import types
@@ -8,6 +7,8 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from tools import native_web_search
+# Import precision retry utilities
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 class QueryPlan(BaseModel):
     queries: list[str] = Field(description="List of 3-4 distinct search queries optimized for web search engines.")
@@ -27,15 +28,22 @@ class ResearchState(TypedDict):
 api_key = os.environ.get("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
 
-def call_gemini_with_retry(contents, config, retries=3, delay=2):
-    for i in range(retries):
-        try:
-            return client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-        except Exception as e:
-            if i < retries - 1:
-                time.sleep(delay * (2 ** i))
-                continue
-            raise e
+# Production-grade exponential backoff wrapper
+@retry(
+    stop=stop_after_attempt(4), # Try 4 times max before giving up
+    wait=wait_exponential(multiplier=2, min=2, max=10), # Wait 2s, 4s, 8s...
+    reraise=True # If all attempts fail, pass the error gracefully to the UI
+)
+def call_gemini_with_retry(contents, config):
+    """
+    Executes a structured generative call against Gemini 2.5 Flash, 
+    automatically backing off if hit by upstream 503 network strain.
+    """
+    return client.models.generate_content(
+        model='gemini-2.5-flash', 
+        contents=contents, 
+        config=config
+    )
 
 def planner_node(state: ResearchState):
     messages = state.get("messages", [])
@@ -47,6 +55,7 @@ def planner_node(state: ResearchState):
         system_instruction="You are a research planning engine.",
         temperature=0.1
     )
+    # Patched to leverage robust tenacity structure
     response = call_gemini_with_retry(f"Plan research for: {task_content}", config)
     data = json.loads(response.text)
     
@@ -71,6 +80,7 @@ def researcher_node(state: ResearchState):
         system_instruction="You are a Senior AI Researcher. Compile your findings into a comprehensive technical doc.",
         temperature=0.2
     )
+    # Patched to leverage robust tenacity structure
     response = call_gemini_with_retry(
         f"Existing Document Draft:\n{existing_research}\n\nNew context to integrate:\n{full_scraped_context}", 
         config
@@ -81,7 +91,6 @@ def researcher_node(state: ResearchState):
         "current_research": response.text
     }
 
-# NODE 3: The Critic Node
 def critic_node(state: ResearchState):
     messages = state.get("messages", [])
     original_task = messages[0].content if messages else "No task."
@@ -95,6 +104,7 @@ def critic_node(state: ResearchState):
     )
     
     prompt = f"Original Task: {original_task}\n\nCurrent Draft:\n{current_research}"
+    # Patched to leverage robust tenacity structure
     response = call_gemini_with_retry(prompt, config)
     eval_data = json.loads(response.text)
     
@@ -104,15 +114,12 @@ def critic_node(state: ResearchState):
         "messages": [{"role": "assistant", "content": f"Critique: {eval_data.get('critique')}"}]
     }
 
-# Conditional routing edge evaluation logic
 def should_continue(state: ResearchState):
-    # Enforce hard cap to control runtime token budgets
     if state.get("loop_count", 0) >= 2:
         print("--- HARD TERMINATION: Loop limit reached ---")
         return END
         
     messages = state.get("messages", [])
-    # Re-evaluate the structured evaluation block from the critic message stream
     last_message = messages[-1].content
     if "Critique:" in last_message and len(state.get("search_queries", [])) > 0:
         print("--- LOOPING BACK: Critic requested deeper data collection ---")
@@ -131,7 +138,6 @@ workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "researcher")
 workflow.add_edge("researcher", "critic")
 
-# Dynamic execution edge based on evaluator state rule matching
 workflow.add_conditional_edges(
     "critic",
     should_continue,
