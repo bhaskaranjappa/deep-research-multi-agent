@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py agent.py tools.py app.py.
 
 # Expose production port
-EXPOSE 8501
+EXPOSE 8000
 
 # Run via optimized Uvicorn production worker layout
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app.py", "--server.port=8000", "--server.address=0.0.0.0", "--server.enableCORS=false", "--server.enableWebsocketCompression=false"]
