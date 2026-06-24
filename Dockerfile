@@ -20,7 +20,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source elements
-COPY main.py agent.py tools.py app.py.
+COPY main.py agent.py tools.py app.py .
 
 # Expose production port
 EXPOSE 8000
