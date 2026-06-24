@@ -20,10 +20,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source elements
-COPY main.py agent.py tools.py .
+COPY main.py agent.py tools.py app.py.
 
 # Expose production port
-EXPOSE 8000
+EXPOSE 8501
 
 # Run via optimized Uvicorn production worker layout
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
